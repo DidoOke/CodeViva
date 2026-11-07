@@ -1,6 +1,6 @@
 """Stage 3 (model proposals) and stage 4 (verification in code).
 
-Stage 3 asks the model for decision points the rules did not anticipate, given the facts, the
+Stage 3 asks the model (Gemini or OpenAI, see llm.py) for decision points the rules did not anticipate, given the facts, the
 line-numbered code, the commit list and the assignment spec. The raw response is saved
 untouched. Only code excerpts, facts and commit messages are sent: no names, no submission id.
 

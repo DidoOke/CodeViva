@@ -184,7 +184,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--kb", action="append", help="knowledge base dir (repeatable)")
     p.add_argument("--round", type=int, default=1, dest="round_no")
     p.add_argument("--runs", default="runs", help="root directory for run artifacts")
-    p.add_argument("--use-openai", action="store_true", help="enable the model layer (stages 3, 6, 7)")
+    p.add_argument("--use-llm", "--use-openai", dest="use_openai", action="store_true",
+                   help="enable the model layer (stages 3, 6, 7); provider from LLM_PROVIDER / .env")
     p.add_argument("--from-stage", help="re-run from this stage; earlier stages load from disk")
     p.add_argument("--stop-after", default="5", help="stop after this stage (default 5: the plan; "
                    "use interview.py for the interview)")

@@ -136,7 +136,7 @@ def s7_grade(ctx: RunContext, inputs: Dict[str, Any]) -> StageResult:
     scored = sum(1 for d in report["dimensions"] if d["score"] is not None)
     return StageResult(report, count_in=len(report["dimensions"]), count_out=scored,
                        summary=f"draft total {report['total']}/{report['max_total']}; {flag}",
-                       model=report["grader"] if report["grader"].startswith("openai:") else None)
+                       model=None if report["grader"].startswith("heuristic") else report["grader"])
 
 
 def build_stages() -> List[Stage]:

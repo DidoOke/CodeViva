@@ -1,6 +1,6 @@
 """Run stages 0-6 for one submission and hold the interview.
 
-    python interview.py --db demo.db --submission 1 --kb kb/generic --kb kb/task_scheduler --use-openai --text
+    python interview.py --db demo.db --submission 1 --kb kb/generic --kb kb/task_scheduler --use-llm --text
     python interview.py --db demo.db --submission 1 --answers demo_answers/submission1.txt   # scripted demo
 
 Artifacts go to runs/<submission>/round<N>/. plan.json and transcript.json are also copied to
@@ -34,7 +34,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--kb", action="append", help="knowledge base dir (repeatable)")
     ap.add_argument("--round", type=int, default=1, dest="round_no")
     ap.add_argument("--runs", default="runs")
-    ap.add_argument("--use-openai", action="store_true")
+    ap.add_argument("--use-llm", "--use-openai", dest="use_openai", action="store_true",
+                    help="use the model layer (provider from LLM_PROVIDER / .env)")
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--text", action="store_true", help="interactive text interview in the terminal")
     mode.add_argument("--answers", type=Path, help="scripted answers file (demo / testing)")

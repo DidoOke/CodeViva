@@ -9,6 +9,8 @@ Reply = Union[Dict[str, Any], Exception]
 class FakeModel:
     """JSONModel stand-in. `replies` is a list (consumed in order) or a callable(system, user, name)."""
 
+    provider = "openai"
+
     def __init__(self, replies: Union[List[Reply], Callable[..., Reply]], model: str = "fake-model"):
         self.model = model
         self.replies = replies

@@ -1,6 +1,6 @@
 """Stage 7: draft grades with verified quotes and a human-review flag set in code.
 
-    python grade.py transcript.json plan.json [--use-openai] [--out DIR]
+    python grade.py transcript.json plan.json [--use-llm] [--out DIR]
 
 Two independent grading passes score five dimensions 0-4. Every score must rest on verbatim
 student quotes; code checks each quote is a substring of what the STUDENT said and drops any
@@ -12,7 +12,7 @@ score left without support. needs_human_review is set by code, never by the mode
 Grades are AI-drafted and must be reviewed by a named academic. Agreement between passes is a
 reliability signal; it does not show that the grades are valid.
 
-Without OpenAI a deterministic keyword grader produces the passes. It is a demo fallback,
+Without a model a deterministic keyword grader produces the passes. It is a demo fallback,
 labelled as such in the report.
 """
 from __future__ import annotations
@@ -111,7 +111,7 @@ def model_pass(model: JSONModel, transcript: Dict[str, Any], plan: Dict[str, Any
     resp = model.complete_json(system=GRADE_SYSTEM + f"\n(Independent pass {pass_no}.)",
                                user=render_for_grader(transcript, plan, order),
                                schema=GRADE_SCHEMA, name="grades")
-    return {"grader": f"openai:{model.model}", "scores": resp.get("scores", [])}
+    return {"grader": f"{getattr(model, 'provider', 'llm')}:{model.model}", "scores": resp.get("scores", [])}
 
 
 def _sentences(text: str) -> List[str]:
@@ -284,7 +284,7 @@ def write_outputs(out_dir: Path, transcript: Dict[str, Any], plan: Dict[str, Any
                   submission_id: str = "", round_no: int = 1, input_hash: str = "") -> Dict[str, Path]:
     p1, p2, report = results
     input_hash = input_hash or hash_json({"transcript": hash_json(transcript), "plan": hash_json(plan)})
-    model = report["grader"] if report["grader"].startswith("openai:") else None
+    model = None if report["grader"].startswith("heuristic") else report["grader"]
     paths = {}
     for name, data in (("stage7_grades_pass1.json", p1), ("stage7_grades_pass2.json", p2)):
         n = len(data["verified"]["scores"])
@@ -308,7 +308,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="Draft grades for one interview transcript.")
     ap.add_argument("transcript", type=Path)
     ap.add_argument("plan", type=Path)
-    ap.add_argument("--use-openai", action="store_true")
+    ap.add_argument("--use-llm", "--use-openai", dest="use_openai", action="store_true",
+                    help="use the model layer (provider from LLM_PROVIDER / .env)")
     ap.add_argument("--out", type=Path, help="output dir (default: next to the transcript)")
     args = ap.parse_args(argv)
     try:

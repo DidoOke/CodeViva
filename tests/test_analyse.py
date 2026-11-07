@@ -103,6 +103,7 @@ def test_env_file_loads_without_overriding(tmp_path, monkeypatch):
     from llm import load_env_file
     env = tmp_path / ".env"
     env.write_text("# comment\nexport OPENAI_MODEL='from-file'\nOPENAI_API_KEY=sk-test\n")
+    monkeypatch.delenv("CODEVIVA_NO_DOTENV", raising=False)
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "already-set")
     load_env_file(env)

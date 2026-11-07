@@ -1,7 +1,7 @@
 """Minimal demo page: stages, provenance chain, examiner chat and draft report.
 
     DATABASE_URL=sqlite:///demo.db python webapp.py        # http://127.0.0.1:8001
-    CODEVIVA_USE_OPENAI=1 ...                              # enable the model layer
+    CODEVIVA_USE_LLM=1 ...                                 # enable the model layer
 
 Local demo only: no auth, binds to 127.0.0.1, synthetic data.
 """
@@ -27,7 +27,7 @@ from stages import DEFAULT_KB, build_stages, make_context_options
 
 DB = os.environ.get("DATABASE_URL", "sqlite:///demo.db")
 RUNS = Path(os.environ.get("CODEVIVA_RUNS", "runs"))
-USE_OPENAI = os.environ.get("CODEVIVA_USE_OPENAI") == "1"
+USE_OPENAI = "1" in (os.environ.get("CODEVIVA_USE_LLM"), os.environ.get("CODEVIVA_USE_OPENAI"))
 
 app = FastAPI(title="CodeViva oral assessment demo")
 
