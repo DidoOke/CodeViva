@@ -102,10 +102,10 @@ For the hackathon, we are deliberately keeping the first version focused:
 - Python repositories
 - Small DSA and software-engineering projects
 - GitHub URL or ZIP submission
-- Repository-aware adaptive questioning
-- One live code-modification task
-- One concept-transfer problem
-- A reviewable educator evidence report
+- A clean upload-first ingestion experience
+- Fast repository analysis and chunking for retrieval
+- Stored code context for later grounded assessment generation
+- A reviewable foundation for future educator evidence reports
 
 ### Core student journey
 
@@ -154,30 +154,102 @@ CodeViva is being developed for **Reply AI on Campus**, part of the Reply Studen
 
 The challenge asks teams to identify a real problem in university teaching, learning, or assessment and build an AI-based solution. CodeViva addresses a growing assessment problem created by AI-assisted software development while keeping educators in control of high-stakes decisions.
 
+## Current build: ingestion-first MVP
+
+This repository now includes the first implementation slice for CodeViva:
+
+- **Frontend:** React + Vite upload-first landing page
+- **Backend:** FastAPI ingestion API
+- **Storage:** PostgreSQL with pgvector-ready schema
+- **Pipeline:** GitHub or ZIP intake, repository normalization, file inventory, chunking, and summary generation
+- **Containerization:** Docker Compose for local full-stack development
+
+### Architecture
+
+See [docs/architecture.md](<docs/architecture.md>) for the ingestion-first system design.
+
+### Project structure
+
+```text
+CodeViva/
+├── backend/                  # FastAPI API + ingestion pipeline
+│   ├── app/
+│   ├── storage/
+│   ├── requirements.txt
+│   └── Dockerfile
+├── frontend/                 # React + Vite upload UI
+│   ├── src/
+│   └── Dockerfile
+├── docs/
+│   └── architecture.md
+└── docker-compose.yml
+```
+
+### API endpoints
+
+- `POST /api/repositories/github`
+- `POST /api/repositories/upload`
+- `GET /api/repositories/{repository_id}`
+- `GET /api/repositories/{repository_id}/status`
+- `GET /api/repositories/{repository_id}/files`
+- `GET /api/repositories/{repository_id}/chunks`
+
+### Run locally with Docker
+
+```bash
+docker compose up --build
+```
+
+Then open:
+
+- Frontend: `http://localhost:5173`
+- Backend docs: `http://localhost:8000/docs`
+
+### Backend development without Docker
+
+```bash
+cd backend
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+### Frontend development without Docker
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
 ## Roadmap
 
-- [ ] Repository ingestion and static analysis
+- [x] Repository ingestion and static analysis foundation
+- [x] Upload-first frontend experience
+- [x] Retrieval-ready code chunk storage
 - [ ] Project and concept map
+- [ ] Embeddings and semantic retrieval
 - [ ] Lecturer-defined learning outcomes
 - [ ] Grounded question generation
 - [ ] Adaptive viva engine
+- [ ] Voice/video assessment recording and playback
 - [ ] Embedded code viewer
 - [ ] Sandboxed live coding task
 - [ ] Concept-transfer task
 - [ ] Evidence-based educator report
-- [ ] Voice assessment and accessibility modes
 - [ ] Cohort-level misconception insights
 - [ ] GitHub Classroom and LMS integrations
 
 ## Success criteria
 
-The prototype succeeds if it can:
+The current ingestion MVP succeeds if it can:
 
-1. Analyse a real student repository.
-2. Generate accurate questions tied to specific code.
-3. Adapt at least one follow-up to the student's answer.
-4. Test understanding through explanation, modification, and transfer.
-5. Produce a report whose conclusions are traceable to evidence.
+1. Accept a GitHub repository URL or ZIP archive.
+2. Analyse a real student repository.
+3. Extract file metadata and dominant project signals quickly.
+4. Chunk source files and docs for later retrieval.
+5. Persist repository context for future grounded assessment generation.
 
 ## Team
 

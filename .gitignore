@@ -2,6 +2,7 @@
 node_modules/
 .venv/
 venv/
+.npm-cache/
 
 # Build output
 dist/
@@ -18,6 +19,11 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
+
+# Storage and local data
+backend/storage/uploads/
+backend/storage/repositories/
+backend/storage/tmp/
 
 # Editors and OS
 .vscode/
