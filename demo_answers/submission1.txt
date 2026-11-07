@@ -1,0 +1,24 @@
+# Synthetic answers for submission 1 (one paragraph per answer). Includes a "repeat" and a feedback request.
+I changed it because with five retries and no waiting, a run where the fake failure rate hit a few jobs took ages in my tests, and it was just hammering the job again straight away. Three retries with exponential backoff gives a transient failure time to clear, but the trade-off is that a job that would have succeeded on the fifth try now fails.
+
+With backoff capped at eight seconds, the worst case for one job is about 0.5 plus 1 plus 2 seconds of waiting, so a dependency that is down for a minute would make jobs fail rather than wait it out. That is a trade-off I accepted to keep runs short.
+
+repeat
+
+It runs four times, because range of MAX_RETRIES plus one gives one initial attempt plus three retries, and the check fires on the last attempt.
+
+I would change the loop to range(MAX_RETRIES) and compare against MAX_RETRIES minus one, but I am not completely sure that is cleaner, maybe I would rename the constant to MAX_ATTEMPTS instead.
+
+Before that commit, when a job failed permanently its dependents never became ready, because their waiting count never reached zero, so they just silently disappeared from the results. I noticed it when the summary printed fewer jobs than were in the input file.
+
+Skipped tells the user the job never ran, which is different from failing after trying. Failed would suggest it was attempted.
+
+was that right?
+
+The crash was a KeyError on deps when a job had no dependencies listed in the JSON file. I found it by running the jobs.json example where cleanup has no deps key, and I decided to fall back to defaults for optional fields and skip jobs with no id.
+
+Not always. Skipping is fine for a missing priority because there is a sensible default, but a job without an id cannot be referenced at all, so I log a warning and skip it. A malformed dependency list should probably fail loudly instead.
+
+I would detect dependency cycles, because right now two jobs that depend on each other are never run and never reported. I would add a check before scheduling that finds any job that never becomes ready.
+
+I would add a test with a cycle and check that both jobs come back as skipped or as an explicit error.

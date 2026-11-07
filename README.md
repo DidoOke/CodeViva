@@ -264,3 +264,58 @@ Built by **Dido Oke** and collaborators for the Reply AI on Campus hackathon.
 **Don't detect the AI. Verify the understanding.**
 
 </div>
+
+
+---
+
+## Hackathon prototype: code-grounded oral assessment
+
+A working round-1 pipeline on **synthetic data** (assignment: `kb/task_scheduler/spec.md`).
+Student code is parsed with `ast`, never executed. Grades are AI-drafted and always need review
+by a named academic.
+
+### Quick start
+
+```bash
+pip install -r requirements-assessment.txt   # pytest; openai/fastapi only if used
+python make_demo_db.py                       # demo.db with 2 synthetic submissions
+python -m pytest                             # all deterministic logic + mocked OpenAI
+
+# plan + interactive text interview (definition of done)
+python interview.py --db demo.db --submission 1 --kb kb/generic --kb kb/task_scheduler --use-llm --text
+python grade.py transcript.json plan.json
+
+# scripted demo, no typing, straight through grading
+python interview.py --db demo.db --submission 1 --answers demo_answers/submission1.txt --grade
+
+# why was a question asked?
+python explain.py runs/1/round1 Q1        # or --all
+
+# web page: stages, evidence trail, chat, report
+DATABASE_URL=sqlite:///demo.db python webapp.py   # http://127.0.0.1:8001
+```
+
+`--use-llm` (alias `--use-openai`) turns on the model layer. Put settings in the git-ignored `.env`
+(template: `.env.example`): `LLM_PROVIDER=gemini` with `GEMINI_API_KEY` and `GEMINI_MODEL`, or
+`LLM_PROVIDER=openai` with `OPENAI_API_KEY` and `OPENAI_MODEL`. Without them, the pipeline says
+so and continues rules-only, and grading uses a labelled keyword heuristic. Never commit keys:
+the GitHub repo is public and pushed keys are revoked automatically.
+
+### Stages (artifacts in `runs/<submission>/round<N>/`)
+
+| # | Stage | Artifact | What it does |
+|---|---|---|---|
+| 0 | ingest | `stage0_submission.json` | files, hashes, commits from the DB (`db_adapter.py`) |
+| 1 | facts | `stage1_facts.json` | deterministic facts with file, line, commit (`facts.py`) |
+| 2 | rule_match | `stage2_rule_matches.json` | markdown rules in `kb/`, triggered or not, seeded choice (`kb_match.py`) |
+| 3 | model | `stage3_model_raw.json` | model proposals (Gemini or OpenAI), saved untouched (`analyse.py`) |
+| 4 | verify | `stage4_verified.json` | each proposal accepted or rejected with a reason (`analyse.py`) |
+| 5 | plan | `stage5_plan.json` | final questions and why each was chosen (`plan.py`) |
+| 6 | interview | `transcript.json` | code-controlled examiner, one question per turn (`examiner.py`) |
+| 7 | grade | `stage7_grades_pass{1,2}.json`, `report.json`, `report.md` | quote-verified scores, review flag set in code (`grade.py`) |
+
+Every artifact records the stage name, input hash, timestamp, model and counts; `stages.md`
+summarises a run and marks stages STALE when upstream output changed. Re-run any part with
+`python pipeline.py --submission 1 --db demo.db --from-stage 2 --stop-after 5`.
+Paths are keyed by round, and a round-2 `delta` stage slot is reserved in `stages.py`.
+The voice seam is `examiner.VoiceTransport` (ElevenLabs), with `agent_prompt.md`.

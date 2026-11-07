@@ -32,3 +32,14 @@ backend/storage/tmp/
 
 # Logs
 *.log
+
+# Stage pipeline run artifacts (contain student code excerpts)
+runs/
+
+# Demo outputs
+/demo.db
+/transcript.json
+/plan.json
+/report.json
+/report.md
+/stage7_grades_pass*.json
