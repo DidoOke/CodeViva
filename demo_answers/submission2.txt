@@ -1,0 +1,20 @@
+# Synthetic answers for submission 2: short, vague answers -> expect review flags.
+I just picked ten, it seemed enough.
+
+Not sure.
+
+It catches errors.
+
+pass
+
+It sorts them so priority works.
+
+I don't know.
+
+Make it faster.
+
+Probably test it.
+
+Add some logging maybe.
+
+Run it and see.

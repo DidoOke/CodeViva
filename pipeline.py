@@ -53,6 +53,7 @@ class Stage:
     fn: StageFn
     requires: List[str] = field(default_factory=list)
     min_round: int = 1  # e.g. the delta stage only exists from round 2
+    flat: bool = False  # write {**data, meta} instead of {meta, data}
 
 
 class StageError(RuntimeError):
@@ -129,6 +130,7 @@ def run_pipeline(
             count_out=result.count_out,
             summary=result.summary,
             model=result.model,
+            flat=stage.flat,
         )
 
     write_stages_md(stages, ctx)
@@ -168,29 +170,26 @@ def write_stages_md(stages: List[Stage], ctx: RunContext) -> Path:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Stage registry. Stages 0-5 wrap the existing deterministic code (ingest, facts, rule_match)
-# and the OpenAI layer (model, verify, plan); they are registered once that code is in the repo.
-# A round-2 delta stage registers as Stage(id="1d", ..., requires=["1"], min_round=2).
-# ---------------------------------------------------------------------------
-STAGES: List[Stage] = []
-
-
 def main(argv: Optional[List[str]] = None) -> int:
     import argparse
     import sys
 
+    # Import via the module name so `python pipeline.py` and `stages` share one set of classes.
+    from pipeline import RunContext, StageError, run_pipeline
+    from stages import DEFAULT_KB, build_stages, make_context_options
+
     p = argparse.ArgumentParser(description="Run the staged analysis pipeline for one submission.")
     p.add_argument("--submission", required=True, help="submission id (also the random seed)")
+    p.add_argument("--db", help="database URL or SQLite path (default: $DATABASE_URL)")
+    p.add_argument("--kb", action="append", help="knowledge base dir (repeatable)")
     p.add_argument("--round", type=int, default=1, dest="round_no")
     p.add_argument("--runs", default="runs", help="root directory for run artifacts")
+    p.add_argument("--use-openai", action="store_true", help="enable the model layer (stages 3, 6, 7)")
     p.add_argument("--from-stage", help="re-run from this stage; earlier stages load from disk")
-    p.add_argument("--stop-after", help="stop after this stage")
+    p.add_argument("--stop-after", default="5", help="stop after this stage (default 5: the plan; "
+                   "use interview.py for the interview)")
     args = p.parse_args(argv)
 
-    if not STAGES:
-        print("error: no stages registered yet", file=sys.stderr)
-        return 2
     runs_root = Path(args.runs)
     ctx = RunContext(
         submission_id=args.submission,
@@ -198,10 +197,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_dir=round_dir(runs_root, args.submission, args.round_no),
         runs_root=runs_root,
         seed=str(args.submission),
+        options=make_context_options(db=args.db, kb_dirs=args.kb or DEFAULT_KB, use_openai=args.use_openai),
     )
     try:
-        run_pipeline(STAGES, ctx, from_stage=args.from_stage, stop_after=args.stop_after)
-    except StageError as exc:
+        run_pipeline(build_stages(), ctx, from_stage=args.from_stage, stop_after=args.stop_after)
+    except (StageError, ValueError, LookupError, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print((ctx.run_dir / "stages.md").read_text(encoding="utf-8"))

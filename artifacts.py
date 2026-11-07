@@ -58,7 +58,9 @@ def write_artifact(
     count_out: int,
     summary: str,
     model: Optional[str] = None,
+    flat: bool = False,
 ) -> dict:
+    """flat=True writes {**data, "meta": ...} so files with a prescribed shape keep it."""
     envelope = {
         "meta": {
             "stage": stage,
@@ -75,9 +77,10 @@ def write_artifact(
         },
         "data": data,
     }
+    on_disk = {**data, "meta": envelope["meta"]} if flat else envelope
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(envelope, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(on_disk, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(path)  # atomic: a crashed stage never leaves a half-written artifact
     return envelope
 
@@ -86,6 +89,8 @@ def read_artifact(path: Path) -> dict:
     if not path.exists():
         raise FileNotFoundError(f"artifact not found: {path}")
     envelope = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(envelope, dict) or "meta" not in envelope or "data" not in envelope:
-        raise ValueError(f"not a stage artifact (missing meta/data): {path}")
+    if not isinstance(envelope, dict) or "meta" not in envelope:
+        raise ValueError(f"not a stage artifact (missing meta): {path}")
+    if "data" not in envelope:  # flat artifact
+        return {"meta": envelope["meta"], "data": {k: v for k, v in envelope.items() if k != "meta"}}
     return envelope
