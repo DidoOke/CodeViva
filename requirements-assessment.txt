@@ -1,0 +1,7 @@
+# Oral-assessment prototype (repo root). Python 3.9+.
+# Core pipeline uses only the standard library; these are optional extras.
+pytest>=7          # tests
+openai>=1.40       # only with --use-openai
+fastapi>=0.100     # only for webapp.py
+uvicorn>=0.23      # only for webapp.py
+# psycopg[binary]  # only for a Postgres DATABASE_URL

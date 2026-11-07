@@ -169,3 +169,9 @@ def insert_submission(conn: sqlite3.Connection, submission: Dict[str, Any]) -> i
             cur.execute("INSERT INTO commit_files (commit_id, path, content) VALUES (?, ?, ?)", (cid, path, content))
     conn.commit()
     return sid
+
+
+def list_submissions(db: Optional[str] = None) -> List[Dict[str, Any]]:
+    with connect(db) as (conn, _ph):
+        rows = _rows(conn, "SELECT id, assignment, label FROM submissions ORDER BY id", ())
+    return [{"id": str(r[0]), "assignment": r[1], "label": r[2]} for r in rows]
