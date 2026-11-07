@@ -24,6 +24,8 @@ __pycache__/
 backend/storage/uploads/
 backend/storage/repositories/
 backend/storage/tmp/
+backend/storage/runs/
+backend/storage/*.db
 
 # Editors and OS
 .vscode/
