@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 from typing import Any, Dict, Optional, Protocol, Tuple
 
 
@@ -59,8 +60,28 @@ class OpenAIJSONModel:
         raise ModelError(f"model call failed after 2 attempts ({type(last).__name__})")
 
 
+def load_env_file(path: Optional[Path] = None) -> None:
+    """Load KEY=VALUE lines from the repo's git-ignored .env into os.environ.
+
+    Variables already set in the environment win. Values are never printed or logged.
+    """
+    path = path or Path(__file__).resolve().parent / ".env"
+    if not path.is_file():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip().removeprefix("export ").strip()
+        value = value.strip().strip('"').strip("'")
+        if key and value and key not in os.environ:
+            os.environ[key] = value
+
+
 def get_model(use_openai: bool, client: Any = None) -> Tuple[Optional[JSONModel], str]:
     """Return (model or None, human-readable reason when None)."""
+    load_env_file()
     if not use_openai:
         return None, "OpenAI not requested"
     try:
