@@ -10,6 +10,7 @@ import type {
   RepositoryFile,
   RepositoryResponse,
   RepositorySummary,
+  TailoredFollowUpResponse,
 } from '../types/repository'
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000/api'
@@ -212,14 +213,39 @@ export async function runCodingChallenge(
   return handleResponse<CodingChallengeRunResult>(response)
 }
 
+export async function generateQuestionFollowUp(
+  repositoryId: number,
+  payload: {
+    question_id: string
+    answer: string
+    modified_code?: string
+  }
+): Promise<TailoredFollowUpResponse> {
+  const response = await fetch(
+    `${API_BASE}/assessment/repositories/${repositoryId}/coding-challenge/follow-up`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question_id: payload.question_id,
+        answer: payload.answer,
+        modified_code: payload.modified_code ?? '',
+      }),
+    }
+  )
+  return handleResponse<TailoredFollowUpResponse>(response)
+}
+
 export async function submitCodingChallengeAndDefence(
   repositoryId: number,
   payload: {
-    code: string
+    code?: string
     answers: Array<{
       question_id: string
       answer: string
+      follow_up_question?: string
       follow_up_answer?: string
+      modified_code?: string
     }>
     use_llm?: boolean
     round_no?: number
@@ -231,7 +257,7 @@ export async function submitCodingChallengeAndDefence(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        code: payload.code,
+        code: payload.code ?? '',
         answers: payload.answers,
         use_llm: payload.use_llm ?? true,
         round_no: payload.round_no ?? 1,

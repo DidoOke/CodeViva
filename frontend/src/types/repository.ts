@@ -223,15 +223,44 @@ export interface CodingChallengeTestResult {
 
 export interface TargetedDefenceQuestion {
   id: string
+  kind?: 'code_question' | 'live_modification'
   dimension: string
   dimension_label: string
   anchor: string
+  target_file?: string
+  target_symbol?: string
+  target_lines?: string
+  code_snippet?: string
+  raw_snippet?: string
+  starter_snippet?: string
+  modification_prompt?: string
+  ask_follow_up?: boolean
+  timer_seconds?: number
   citations: string[]
   text: string
   follow_up: string
   good_answer_mentions: string[]
   why_selected: string
   suggested_outline: string
+}
+
+export interface TailoredFollowUpResponse {
+  should_ask_follow_up: boolean
+  examiner_context_note: string
+  follow_up_question: string
+  code_diff: string
+  timer_seconds: number
+}
+
+export interface LiveModificationReportItem {
+  question_id: string
+  target_file: string
+  target_lines: string
+  prompt: string
+  starter_code: string
+  modified_code: string
+  was_modified: boolean
+  explanation: string
 }
 
 export interface CodingChallenge {
@@ -300,6 +329,7 @@ export interface AssessmentReport {
   student_words: number
   stacked_question_turns: number
   coding_challenge?: CodingChallengeReportSummary
+  live_modifications?: LiveModificationReportItem[]
 }
 
 export interface AssessmentReportResponse {

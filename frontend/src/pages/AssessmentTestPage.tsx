@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   fetchAssessmentStatus,
   fetchCodingChallenge,
+  generateQuestionFollowUp,
   runCodingChallenge,
   submitCodingChallengeAndDefence,
 } from '../api/client'
@@ -17,12 +18,10 @@ import type {
   AssessmentReportResponse,
   AssessmentStatus,
   CodingChallenge,
-  CodingChallengeRunResult,
   RepositorySummary,
   TargetedDefenceQuestion,
 } from '../types/repository'
 import { AppShell, type FlowStep } from '../components/layout/AppShell'
-import { SectionHeading } from '../components/primitives/SectionHeading'
 import codevivaLogo from '../assets/codeviva.png'
 
 interface AssessmentTestPageProps {
@@ -40,6 +39,8 @@ const dimensionBadgeStyle: Record<string, { bg: string; text: string }> = {
   consistency_across_rounds: { bg: '#62aef0', text: '#000000' },
   communication_under_follow_up: { bg: '#f6d5b8', text: '#000000' },
 }
+
+const DEFAULT_TIMER_SECONDS = 30
 
 function countWords(text: string): number {
   return text
@@ -59,33 +60,46 @@ export function AssessmentTestPage({
   const [speechCaps, setSpeechCaps] = useState<SpeechCapabilities>({ tts: null, stt: null })
 
   const [challenge, setChallenge] = useState<CodingChallenge | null>(null)
-  const [code, setCode] = useState<string>('')
-  const [runResult, setRunResult] = useState<CodingChallengeRunResult | null>(null)
-  const [selectedTestCaseIdx, setSelectedTestCaseIdx] = useState<number>(0)
-
   const [questions, setQuestions] = useState<TargetedDefenceQuestion[]>([])
-  const [answers, setAnswers] = useState<Record<string, string>>({})
 
-  const [isLoadingChallenge, setIsLoadingChallenge] = useState<boolean>(true)
-  const [isRunningCode, setIsRunningCode] = useState<boolean>(false)
-  const [isSubmittingDefence, setIsSubmittingDefence] = useState<boolean>(false)
+  // One-at-a-time question state
+  const [activeIdx, setActiveIdx] = useState<number>(0)
+  const [turnPhase, setTurnPhase] = useState<'primary' | 'followup'>('primary')
+
+  // Per-question student responses
+  const [primaryAnswers, setPrimaryAnswers] = useState<Record<string, string>>({})
+  const [followUpQuestions, setFollowUpQuestions] = useState<Record<string, string>>({})
+  const [followUpNotes, setFollowUpNotes] = useState<Record<string, string>>({})
+  const [followUpAnswers, setFollowUpAnswers] = useState<Record<string, string>>({})
+  const [modifiedSnippets, setModifiedSnippets] = useState<Record<string, string>>({})
+  const [syntaxStatus, setSyntaxStatus] = useState<Record<string, { ok: boolean; msg: string }>>({})
+
+  // 30-second countdown timer state
+  const [timeLeft, setTimeLeft] = useState<number>(DEFAULT_TIMER_SECONDS)
+  const [timerPaused, setTimerPaused] = useState<boolean>(false)
+
+  // Loading & submission flags
+  const [isLoadingAssessment, setIsLoadingAssessment] = useState<boolean>(true)
+  const [isGeneratingFollowUp, setIsGeneratingFollowUp] = useState<boolean>(false)
+  const [isSubmittingFinal, setIsSubmittingFinal] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Voice TTS & STT per question
-  const [speakingQuestionId, setSpeakingQuestionId] = useState<string | null>(null)
-  const [listeningQuestionId, setListeningQuestionId] = useState<string | null>(null)
+  // Voice TTS & STT
+  const [isSpeaking, setIsSpeaking] = useState<boolean>(false)
+  const [isListening, setIsListening] = useState<boolean>(false)
   const [interimTranscript, setInterimTranscript] = useState<string>('')
   const listeningRef = useRef<ListeningSession | null>(null)
-  const questionsSectionRef = useRef<HTMLElement | null>(null)
+
+  const currentQuestion: TargetedDefenceQuestion | undefined = questions[activeIdx]
 
   useEffect(() => {
     let cancelled = false
 
-    async function loadWorkspace() {
-      setIsLoadingChallenge(true)
+    async function loadAssessment() {
+      setIsLoadingAssessment(true)
       setError(null)
       try {
-        const [st, caps, loadedChallenge] = await Promise.all([
+        const [st, caps, loaded] = await Promise.all([
           fetchAssessmentStatus().catch(() => null),
           getSpeechCapabilities().catch(() => ({ tts: null, stt: null })),
           fetchCodingChallenge(repository.id),
@@ -93,109 +107,243 @@ export function AssessmentTestPage({
         if (cancelled) return
         if (st) setStatus(st)
         setSpeechCaps(caps)
-        setChallenge(loadedChallenge)
-        setCode(loadedChallenge.starter_code)
-        setQuestions(loadedChallenge.targeted_questions)
+        setChallenge(loaded)
+        setQuestions(loaded.targeted_questions)
 
-        const initialAnswers: Record<string, string> = {}
-        for (const q of loadedChallenge.targeted_questions) {
-          initialAnswers[q.id] = ''
+        const initPrimary: Record<string, string> = {}
+        const initFollowQ: Record<string, string> = {}
+        const initFollowAns: Record<string, string> = {}
+        const initMods: Record<string, string> = {}
+
+        for (const q of loaded.targeted_questions) {
+          initPrimary[q.id] = ''
+          initFollowQ[q.id] = q.follow_up || ''
+          initFollowAns[q.id] = ''
+          if (q.kind === 'live_modification') {
+            initMods[q.id] = q.starter_snippet || q.raw_snippet || ''
+          }
         }
-        setAnswers(initialAnswers)
+
+        setPrimaryAnswers(initPrimary)
+        setFollowUpQuestions(initFollowQ)
+        setFollowUpAnswers(initFollowAns)
+        setModifiedSnippets(initMods)
+        setActiveIdx(0)
+        setTurnPhase('primary')
+        setTimeLeft(loaded.targeted_questions[0]?.timer_seconds ?? DEFAULT_TIMER_SECONDS)
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : 'Failed to load coding challenge for repository.')
+          setError(err instanceof Error ? err.message : 'Failed to prepare tailored codebase questions.')
         }
       } finally {
         if (!cancelled) {
-          setIsLoadingChallenge(false)
+          setIsLoadingAssessment(false)
         }
       }
     }
 
-    loadWorkspace()
+    loadAssessment()
     return () => {
       cancelled = true
     }
   }, [repository.id])
 
-  async function handleRunCode() {
-    if (!challenge || isRunningCode) return
-    setIsRunningCode(true)
-    setError(null)
-    try {
-      const res = await runCodingChallenge(repository.id, code)
-      setRunResult(res)
-      if (res.targeted_questions && res.targeted_questions.length > 0) {
-        setQuestions(res.targeted_questions)
+  // 30-second countdown timer per turn
+  useEffect(() => {
+    if (
+      isLoadingAssessment ||
+      isGeneratingFollowUp ||
+      isSubmittingFinal ||
+      timerPaused ||
+      !currentQuestion
+    ) {
+      return
+    }
+
+    if (timeLeft <= 0) {
+      // Auto-advance when the 30-second timer expires
+      if (turnPhase === 'primary') {
+        void handleConfirmPrimaryTurn()
+      } else {
+        void handleConfirmFollowUpTurn()
       }
-      // Automatically focus the first failed test case if any failed
-      const firstFailedIdx = res.test_results.findIndex((t) => !t.passed)
-      if (firstFailedIdx >= 0) {
-        setSelectedTestCaseIdx(firstFailedIdx)
+      return
+    }
+
+    const interval = window.setInterval(() => {
+      setTimeLeft((prev) => Math.max(0, prev - 1))
+    }, 1000)
+
+    return () => window.clearInterval(interval)
+  }, [
+    timeLeft,
+    timerPaused,
+    turnPhase,
+    activeIdx,
+    isLoadingAssessment,
+    isGeneratingFollowUp,
+    isSubmittingFinal,
+    currentQuestion,
+  ])
+
+  async function stopActiveMicrophone() {
+    if (isListening && listeningRef.current) {
+      try {
+        const res = await listeningRef.current.stop()
+        setIsListening(false)
+        setInterimTranscript('')
+        listeningRef.current = null
+        return res.text.trim()
+      } catch {
+        setIsListening(false)
+        setInterimTranscript('')
+        listeningRef.current = null
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to execute code against test cases.')
-    } finally {
-      setIsRunningCode(false)
+    }
+    return ''
+  }
+
+  async function handleConfirmPrimaryTurn() {
+    if (!currentQuestion || isGeneratingFollowUp || isSubmittingFinal) return
+
+    const extraVoice = await stopActiveMicrophone()
+    const qid = currentQuestion.id
+    const currentAns = [primaryAnswers[qid] ?? '', extraVoice].filter(Boolean).join(' ').trim()
+    if (extraVoice) {
+      setPrimaryAnswers((prev) => ({ ...prev, [qid]: currentAns }))
+    }
+
+    const modCode = modifiedSnippets[qid] ?? ''
+
+    // Check if this question triggers an occasional tailored follow-up
+    const shouldFollowUp = Boolean(currentQuestion.ask_follow_up)
+
+    if (shouldFollowUp) {
+      setIsGeneratingFollowUp(true)
+      setError(null)
+      try {
+        const followRes = await generateQuestionFollowUp(repository.id, {
+          question_id: qid,
+          answer: currentAns,
+          modified_code: modCode,
+        })
+        setFollowUpQuestions((prev) => ({
+          ...prev,
+          [qid]: followRes.follow_up_question || currentQuestion.follow_up,
+        }))
+        setFollowUpNotes((prev) => ({
+          ...prev,
+          [qid]: followRes.examiner_context_note || 'Noted.',
+        }))
+        setTurnPhase('followup')
+        setTimeLeft(followRes.timer_seconds ?? DEFAULT_TIMER_SECONDS)
+      } catch {
+        setTurnPhase('followup')
+        setTimeLeft(DEFAULT_TIMER_SECONDS)
+      } finally {
+        setIsGeneratingFollowUp(false)
+      }
+    } else {
+      await advanceToNextQuestionOrFinish()
     }
   }
 
-  function scrollToTargetedQuestions() {
-    questionsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  async function handleConfirmFollowUpTurn() {
+    if (!currentQuestion || isSubmittingFinal) return
+
+    const extraVoice = await stopActiveMicrophone()
+    const qid = currentQuestion.id
+    if (extraVoice) {
+      setFollowUpAnswers((prev) => ({
+        ...prev,
+        [qid]: [prev[qid] ?? '', extraVoice].filter(Boolean).join(' ').trim(),
+      }))
+    }
+
+    await advanceToNextQuestionOrFinish()
   }
 
-  async function handleRunAndProceedToQuestions() {
-    await handleRunCode()
-    setTimeout(() => {
-      scrollToTargetedQuestions()
-    }, 150)
+  async function advanceToNextQuestionOrFinish() {
+    if (activeIdx + 1 < questions.length) {
+      const nextIdx = activeIdx + 1
+      setActiveIdx(nextIdx)
+      setTurnPhase('primary')
+      setTimeLeft(questions[nextIdx]?.timer_seconds ?? DEFAULT_TIMER_SECONDS)
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } else {
+      await handleFinishAndGrade()
+    }
   }
 
-  function handleCodeKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+  function handleSelectQuestionStep(idx: number) {
+    if (isGeneratingFollowUp || isSubmittingFinal) return
+    setActiveIdx(idx)
+    setTurnPhase('primary')
+    setTimeLeft(questions[idx]?.timer_seconds ?? DEFAULT_TIMER_SECONDS)
+  }
+
+  async function handleVerifySnippetSyntax(qid: string) {
+    const codeToVerify = modifiedSnippets[qid] ?? ''
+    try {
+      const res = await runCodingChallenge(repository.id, codeToVerify)
+      if (res.compile_error) {
+        setSyntaxStatus((prev) => ({ ...prev, [qid]: { ok: false, msg: res.compile_error! } }))
+      } else {
+        setSyntaxStatus((prev) => ({
+          ...prev,
+          [qid]: { ok: true, msg: '✓ Syntax & AST structure verified cleanly' },
+        }))
+      }
+    } catch {
+      setSyntaxStatus((prev) => ({ ...prev, [qid]: { ok: true, msg: '✓ Snippet recorded' } }))
+    }
+  }
+
+  function handleCodeKeyDown(qid: string, event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === 'Tab') {
       event.preventDefault()
       const target = event.currentTarget
       const start = target.selectionStart
       const end = target.selectionEnd
-      const nextValue = code.substring(0, start) + '    ' + code.substring(end)
-      setCode(nextValue)
+      const currentCode = modifiedSnippets[qid] ?? ''
+      const nextValue = currentCode.substring(0, start) + '    ' + currentCode.substring(end)
+      setModifiedSnippets((prev) => ({ ...prev, [qid]: nextValue }))
       requestAnimationFrame(() => {
         target.selectionStart = target.selectionEnd = start + 4
       })
     }
   }
 
-  async function handleSpeakQuestion(q: TargetedDefenceQuestion) {
-    if (speakingQuestionId) return
-    setSpeakingQuestionId(q.id)
+  async function handleSpeakText(text: string) {
+    if (isSpeaking) return
+    setIsSpeaking(true)
     try {
-      await speak(`${q.text} Follow up: ${q.follow_up}`)
+      await speak(text)
     } catch {
-      // Ignore speech cancellation
+      // Ignore cancellation
     } finally {
-      setSpeakingQuestionId(null)
+      setIsSpeaking(false)
     }
   }
 
-  async function handleToggleDictation(questionId: string) {
-    if (listeningQuestionId === questionId && listeningRef.current) {
-      try {
-        const res = await listeningRef.current.stop()
-        setListeningQuestionId(null)
-        setInterimTranscript('')
-        listeningRef.current = null
-        if (res.text.trim()) {
-          setAnswers((prev) => ({
+  async function handleToggleMicrophone() {
+    if (!currentQuestion) return
+    const qid = currentQuestion.id
+
+    if (isListening && listeningRef.current) {
+      const text = await stopActiveMicrophone()
+      if (text) {
+        if (turnPhase === 'primary') {
+          setPrimaryAnswers((prev) => ({
             ...prev,
-            [questionId]: prev[questionId] ? `${prev[questionId]} ${res.text.trim()}` : res.text.trim(),
+            [qid]: prev[qid] ? `${prev[qid]} ${text}` : text,
+          }))
+        } else {
+          setFollowUpAnswers((prev) => ({
+            ...prev,
+            [qid]: prev[qid] ? `${prev[qid]} ${text}` : text,
           }))
         }
-      } catch (err) {
-        setListeningQuestionId(null)
-        setInterimTranscript('')
-        listeningRef.current = null
-        setError(err instanceof Error ? err.message : 'Voice transcription failed.')
       }
       return
     }
@@ -207,38 +355,43 @@ export function AssessmentTestPage({
         onInterim: (interim) => setInterimTranscript(interim),
       })
       listeningRef.current = session
-      setListeningQuestionId(questionId)
+      setIsListening(true)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Microphone access unavailable.')
     }
   }
 
-  async function handleSubmitAssessment() {
-    if (!challenge || isSubmittingDefence) return
-    setIsSubmittingDefence(true)
+  async function handleFinishAndGrade() {
+    if (isSubmittingFinal) return
+    setIsSubmittingFinal(true)
     setError(null)
     try {
       const formattedAnswers = questions.map((q) => ({
         question_id: q.id,
-        answer: (answers[q.id] ?? '').trim(),
+        answer: (primaryAnswers[q.id] ?? '').trim(),
+        follow_up_question: (followUpQuestions[q.id] ?? q.follow_up ?? '').trim(),
+        follow_up_answer: (followUpAnswers[q.id] ?? '').trim(),
+        modified_code: (modifiedSnippets[q.id] ?? '').trim(),
       }))
+
       const reportResponse = await submitCodingChallengeAndDefence(repository.id, {
-        code,
         answers: formattedAnswers,
         use_llm: true,
         round_no: roundNo,
       })
       onCompleteAssessment(reportResponse, null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to grade coding exercise and targeted responses.')
-    } finally {
-      setIsSubmittingDefence(false)
+      setError(err instanceof Error ? err.message : 'Failed to grade assessment responses.')
+      setIsSubmittingFinal(false)
     }
   }
 
-  const answeredCount = questions.filter((q) => countWords(answers[q.id] ?? '') >= 5).length
-  const activeTestCase = challenge?.test_cases[selectedTestCaseIdx]
-  const activeTestResult = runResult?.test_results[selectedTestCaseIdx]
+  const isLiveModification = currentQuestion?.kind === 'live_modification'
+  const currentQid = currentQuestion?.id ?? 'Q1'
+  const currentPrimaryText = primaryAnswers[currentQid] ?? ''
+  const currentFollowUpText = followUpAnswers[currentQid] ?? ''
+  const activeAnswerWords = countWords(turnPhase === 'primary' ? currentPrimaryText : currentFollowUpText)
+  const timerPercent = Math.min(100, Math.max(0, (timeLeft / DEFAULT_TIMER_SECONDS) * 100))
 
   return (
     <AppShell
@@ -248,7 +401,7 @@ export function AssessmentTestPage({
       onResetRepo={onReset}
     >
       <div className="notion-results-container">
-        {/* Top Assessment Workspace Bar */}
+        {/* Top Assessment Bar & 5-Question Stepper */}
         <section className="notion-mockup-window">
           <div className="notion-mockup-window__topbar">
             <div className="notion-mockup-window__breadcrumbs">
@@ -257,7 +410,7 @@ export function AssessmentTestPage({
               <span className="notion-breadcrumb-item">{repository.display_name}</span>
               <span className="notion-breadcrumb-sep">/</span>
               <strong className="notion-breadcrumb-active">
-                Step 03 · HackerRank Codebase Exercise &amp; Targeted Defence
+                Step 03 · Tailored Codebase Questions &amp; Live Code Modification
               </strong>
             </div>
 
@@ -268,20 +421,9 @@ export function AssessmentTestPage({
                 }`}
               >
                 {status?.llm_configured
-                  ? `Grader: ${status.llm_provider} (${status.llm_model})`
-                  : 'Deterministic Codebase Verifier Ready'}
+                  ? `Agent: ${status.llm_provider} (${status.llm_model})`
+                  : 'Deterministic Codebase Examiner'}
               </span>
-              {runResult ? (
-                <span
-                  className={`notion-pill-tag ${
-                    runResult.all_passed ? 'notion-pill-tag--sky' : 'notion-pill-tag--marigold'
-                  }`}
-                >
-                  Test Suite: {runResult.passed_count} / {runResult.total_count} Passed ({runResult.runtime_ms} ms)
-                </span>
-              ) : (
-                <span className="notion-pill-tag">Test Suite: Ready to Run</span>
-              )}
               <button
                 type="button"
                 className="notion-btn notion-btn--ghost-cta"
@@ -289,45 +431,88 @@ export function AssessmentTestPage({
               >
                 ← Back to Repository Context
               </button>
-            </div>
-          </div>
-
-          <div className="notion-pipeline-toolbar">
-            <div className="notion-pipeline-toolbar__filters">
-              <div>
-                <span className="notion-eyebrow">Part 1 · Live Coding Challenge</span>
-                <p className="notion-caption-muted">
-                  Complete and run the Python exercise grounded in <code>{challenge?.target_lines ?? 'your repository'}</code>.
-                </p>
-              </div>
-              <div>
-                <span className="notion-eyebrow">Part 2 · Targeted Technical Questions ({answeredCount}/{questions.length})</span>
-                <p className="notion-caption-muted">
-                  Defend your implementation, edge-case handling, and architectural trade-offs across 5 rubric dimensions.
-                </p>
-              </div>
-            </div>
-
-            <div className="notion-pipeline-toolbar__actions">
-              <button
-                type="button"
-                className="notion-btn notion-btn--ghost-cta"
-                onClick={scrollToTargetedQuestions}
-              >
-                Jump to Targeted Questions ({questions.length}) ↓
-              </button>
               <button
                 type="button"
                 className="notion-btn notion-btn--primary"
-                disabled={isSubmittingDefence || isLoadingChallenge}
-                onClick={handleSubmitAssessment}
+                disabled={isSubmittingFinal || isLoadingAssessment}
+                onClick={handleFinishAndGrade}
               >
-                {isSubmittingDefence
-                  ? 'Running Grader & Verifying Quotes…'
-                  : 'Submit Exercise & Answers for Grading →'}
+                {isSubmittingFinal ? 'Grading All 5 Questions…' : 'Finish & Grade Now →'}
               </button>
             </div>
           </div>
+
+          {/* 5-Question Progress Stepper Strip */}
+          {questions.length > 0 ? (
+            <div className="notion-pipeline-toolbar">
+              <div className="notion-filter-tabs">
+                {questions.map((q, idx) => {
+                  const hasAnswered =
+                    countWords(primaryAnswers[q.id] ?? '') > 0 ||
+                    (q.kind === 'live_modification' &&
+                      (modifiedSnippets[q.id] ?? '').trim() !== (q.starter_snippet ?? '').trim())
+                  const isCurrent = idx === activeIdx
+                  return (
+                    <button
+                      key={q.id}
+                      type="button"
+                      className={`notion-filter-tab${isCurrent ? ' notion-filter-tab--active' : ''}`}
+                      onClick={() => handleSelectQuestionStep(idx)}
+                    >
+                      {hasAnswered && !isCurrent ? '✓ ' : ''}
+                      {q.id} ·{' '}
+                      {q.kind === 'live_modification' ? 'Live Code Edit' : q.dimension_label}
+                    </button>
+                  )
+                })}
+              </div>
+
+              {/* 30-Second Timer Controls */}
+              <div className="notion-pipeline-toolbar__actions">
+                <span
+                  className={`notion-pill-tag ${
+                    timeLeft <= 5
+                      ? 'notion-pill-tag--coral'
+                      : timeLeft <= 10
+                        ? 'notion-pill-tag--marigold'
+                        : 'notion-pill-tag--sky'
+                  }`}
+                >
+                  ⏱ {timeLeft}s remaining ({turnPhase === 'primary' ? 'Main Question' : 'Follow-Up Probe'})
+                </span>
+                <button
+                  type="button"
+                  className="notion-btn notion-btn--outlined-xs"
+                  onClick={() => setTimerPaused((p) => !p)}
+                >
+                  {timerPaused ? '▶ Resume Timer' : '⏸ Pause 30s Timer'}
+                </button>
+                <button
+                  type="button"
+                  className="notion-btn notion-btn--outlined-xs"
+                  onClick={() => setTimeLeft((t) => t + 15)}
+                >
+                  +15s
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {/* Visual 30-Second Countdown Progress Bar */}
+          {!isLoadingAssessment && currentQuestion ? (
+            <div className="notion-timer-bar-track">
+              <div
+                className={`notion-timer-bar-fill${
+                  timeLeft <= 5
+                    ? ' notion-timer-bar-fill--coral'
+                    : timeLeft <= 10
+                      ? ' notion-timer-bar-fill--marigold'
+                      : ''
+                }`}
+                style={{ width: `${timerPercent}%` }}
+              />
+            </div>
+          ) : null}
         </section>
 
         {error ? (
@@ -336,88 +521,29 @@ export function AssessmentTestPage({
           </div>
         ) : null}
 
-        {isLoadingChallenge || !challenge ? (
+        {isLoadingAssessment || !currentQuestion ? (
           <div className="notion-white-card">
-            <span className="notion-eyebrow">Synthesizing Codebase Challenge</span>
+            <span className="notion-eyebrow">Analyzing Uploaded Codebase</span>
             <h3 className="notion-white-card__title">
-              Extracting functions, line anchors, and test cases from {repository.display_name}…
+              Tailoring 5 code defence and live modification questions to {repository.display_name}…
             </h3>
           </div>
         ) : (
-          <>
-            {/* ================================================================
-                PART 1: HACKERRANK-STYLE CODING EXERCISE WORKSPACE
-                ================================================================ */}
-            <div className="notion-hackerrank-grid">
-              {/* Left Pane: Problem Description & Uploaded Codebase Reference */}
-              <section className="notion-white-card notion-hackerrank-problem">
-                <div className="notion-white-card__top">
-                  <span className="notion-pill-tag notion-pill-tag--marigold">{challenge.difficulty}</span>
-                  <code className="notion-code-chip notion-code-chip--blue">{challenge.target_lines}</code>
-                </div>
-
-                <h2 className="notion-upload-console__title" style={{ fontSize: '24px' }}>
-                  {challenge.title}
-                </h2>
-
-                <div className="notion-problem-markdown">
-                  {challenge.problem_statement.split('\n\n').map((para, idx) => (
-                    <p key={idx} className="notion-white-card__body" style={{ whiteSpace: 'pre-line' }}>
-                      {para}
-                    </p>
-                  ))}
-                </div>
-
-                <div className="notion-constraints-box">
-                  <span className="notion-eyebrow">Invariants &amp; Constraints</span>
-                  <ul className="notion-constraints-list">
-                    {challenge.constraints.map((c, idx) => (
-                      <li key={idx}>{c}</li>
-                    ))}
-                  </ul>
-                </div>
-
-                <div className="notion-chunk-block">
-                  <div className="notion-chunk-block__bar">
-                    <span>Reference from Your Uploaded Codebase</span>
-                    <code>
-                      {challenge.target_file} ({challenge.target_symbol})
-                    </code>
-                  </div>
-                  <pre className="notion-code-pre" style={{ maxHeight: '240px' }}>
-                    <code>{challenge.reference_code}</code>
-                  </pre>
-                </div>
-
-                <details className="notion-explain-drawer">
-                  <summary className="notion-explain-drawer__summary">
-                    Need a nudge? View implementation hint
-                  </summary>
-                  <p className="notion-caption-muted" style={{ marginTop: '8px', lineHeight: 1.5 }}>
-                    {challenge.solution_hint}
-                  </p>
-                  {challenge.reference_solution ? (
-                    <div style={{ marginTop: '10px' }}>
-                      <button
-                        type="button"
-                        className="notion-btn notion-btn--outlined-xs"
-                        onClick={() => setCode(challenge.reference_solution ?? challenge.starter_code)}
-                      >
-                        Load Reference Implementation into Editor
-                      </button>
-                    </div>
-                  ) : null}
-                </details>
-              </section>
-
-              {/* Right Pane: Code Editor & Live Test Case Runner */}
-              <div className="notion-hackerrank-Ide">
+          /* ================================================================
+             ACTIVE QUESTION WORKSPACE (ONE AT A TIME · 30s TIMER)
+             ================================================================ */
+          <div className="notion-hackerrank-grid">
+            {/* LEFT PANE: Grounded Code Snippet OR Live Code Modification Editor */}
+            <div className="notion-hackerrank-problem">
+              {isLiveModification ? (
                 <section className="notion-mockup-window">
                   <div className="notion-mockup-window__topbar">
                     <div className="notion-mockup-window__breadcrumbs">
-                      <span className="notion-pill-tag notion-pill-tag--midnight">Python 3.12 Sandbox</span>
-                      <code>
-                        def {challenge.function_name}(…)
+                      <span className="notion-pill-tag notion-pill-tag--marigold">
+                        Live Code Modification
+                      </span>
+                      <code className="notion-code-chip notion-code-chip--blue">
+                        {currentQuestion.target_lines || challenge?.target_lines}
                       </code>
                     </div>
 
@@ -425,25 +551,22 @@ export function AssessmentTestPage({
                       <button
                         type="button"
                         className="notion-btn notion-btn--outlined-xs"
-                        onClick={() => setCode(challenge.starter_code)}
+                        onClick={() =>
+                          setModifiedSnippets((prev) => ({
+                            ...prev,
+                            [currentQid]:
+                              currentQuestion.starter_snippet || currentQuestion.raw_snippet || '',
+                          }))
+                        }
                       >
-                        Reset Starter Code
+                        Reset to Original Code
                       </button>
                       <button
                         type="button"
                         className="notion-btn notion-btn--ghost-cta"
-                        disabled={isRunningCode}
-                        onClick={handleRunCode}
+                        onClick={() => handleVerifySnippetSyntax(currentQid)}
                       >
-                        {isRunningCode ? 'Running Tests…' : '▶ Run Code'}
-                      </button>
-                      <button
-                        type="button"
-                        className="notion-btn notion-btn--primary"
-                        disabled={isRunningCode}
-                        onClick={handleRunAndProceedToQuestions}
-                      >
-                        Run &amp; Continue to Questions →
+                        ✓ Verify Code Syntax
                       </button>
                     </div>
                   </div>
@@ -451,294 +574,311 @@ export function AssessmentTestPage({
                   <div className="notion-code-editor-wrap">
                     <textarea
                       className="notion-code-editor-textarea"
-                      value={code}
-                      onChange={(e) => setCode(e.target.value)}
-                      onKeyDown={handleCodeKeyDown}
+                      value={modifiedSnippets[currentQid] ?? ''}
+                      onChange={(e) =>
+                        setModifiedSnippets((prev) => ({
+                          ...prev,
+                          [currentQid]: e.target.value,
+                        }))
+                      }
+                      onKeyDown={(e) => handleCodeKeyDown(currentQid, e)}
                       spellCheck={false}
-                      aria-label="Python Coding Exercise Editor"
+                      aria-label={`Live Code Modification Editor for ${currentQuestion.target_file}`}
                     />
                   </div>
-                </section>
 
-                {/* Test Cases & Execution Output Panel */}
+                  {syntaxStatus[currentQid] ? (
+                    <div
+                      style={{
+                        padding: '10px 16px',
+                        borderTop: '1px solid rgba(0,0,0,0.08)',
+                        backgroundColor: syntaxStatus[currentQid].ok ? '#e6f3fe' : '#fff5f3',
+                        color: syntaxStatus[currentQid].ok ? '#0075de' : '#f64932',
+                        fontSize: '13px',
+                        fontWeight: 500,
+                      }}
+                    >
+                      {syntaxStatus[currentQid].msg}
+                    </div>
+                  ) : null}
+                </section>
+              ) : (
                 <section className="notion-white-card">
                   <div className="notion-white-card__top">
-                    <div>
-                      <span className="notion-eyebrow">Automated Verification Suite</span>
-                      <h3 className="notion-white-card__title" style={{ marginTop: '2px' }}>
-                        Test Cases ({challenge.test_cases.length})
-                      </h3>
-                    </div>
-
-                    {runResult ? (
-                      <div className="notion-pill-cluster">
-                        <span
-                          className={`notion-pill-tag ${
-                            runResult.all_passed ? 'notion-pill-tag--sky' : 'notion-pill-tag--coral'
-                          }`}
-                        >
-                          {runResult.passed_count} / {runResult.total_count} Passed
-                        </span>
-                        <span className="notion-pill-tag">{runResult.runtime_ms} ms</span>
-                      </div>
-                    ) : (
-                      <span className="notion-caption-muted">
-                        Click <strong>▶ Run Code</strong> to execute all {challenge.test_cases.length} test cases
-                      </span>
-                    )}
+                    <span className="notion-eyebrow">Your Uploaded Code Context</span>
+                    <code className="notion-code-chip notion-code-chip--blue">
+                      {currentQuestion.target_lines || currentQuestion.anchor}
+                    </code>
                   </div>
 
-                  {runResult?.compile_error ? (
-                    <div className="notion-error-banner" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-                      <strong>Compilation / Execution Error</strong>
-                      <pre className="notion-code-pre" style={{ width: '100%', padding: '8px 0 0' }}>
-                        <code>{runResult.compile_error}</code>
-                      </pre>
-                    </div>
-                  ) : null}
+                  <h3 className="notion-white-card__title">
+                    {currentQuestion.target_file} · <code>{currentQuestion.target_symbol}</code>
+                  </h3>
 
-                  {/* Test Case Selector Tabs */}
-                  <div className="notion-filter-tabs">
-                    {challenge.test_cases.map((tc, idx) => {
-                      const res = runResult?.test_results[idx]
-                      let badge = ''
-                      if (res) {
-                        badge = res.passed ? '✓ ' : '✕ '
-                      }
-                      return (
-                        <button
-                          key={tc.id}
-                          type="button"
-                          className={`notion-filter-tab${
-                            selectedTestCaseIdx === idx ? ' notion-filter-tab--active' : ''
-                          }`}
-                          onClick={() => setSelectedTestCaseIdx(idx)}
-                        >
-                          {badge}
-                          {tc.id}: {tc.name}
-                        </button>
-                      )
-                    })}
+                  <div className="notion-chunk-block">
+                    <div className="notion-chunk-block__bar">
+                      <span>Verbatim Excerpt from {repository.display_name}</span>
+                      <code>{currentQuestion.target_lines}</code>
+                    </div>
+                    <pre className="notion-code-pre" style={{ maxHeight: '420px' }}>
+                      <code>{currentQuestion.code_snippet || challenge?.reference_code}</code>
+                    </pre>
                   </div>
-
-                  {/* Active Test Case Details */}
-                  {activeTestCase ? (
-                    <div className="notion-testcase-detail">
-                      <div className="notion-white-card__top">
-                        <span className="notion-pill-tag">{activeTestCase.category}</span>
-                        {activeTestResult ? (
-                          <span
-                            className={`notion-pill-tag ${
-                              activeTestResult.passed ? 'notion-pill-tag--sky' : 'notion-pill-tag--coral'
-                            }`}
-                          >
-                            {activeTestResult.passed
-                              ? `✓ Passed (${activeTestResult.runtime_ms} ms)`
-                              : '✕ Failed'}
-                          </span>
-                        ) : (
-                          <span className="notion-caption-muted">Not run yet</span>
-                        )}
-                      </div>
-
-                      <div className="notion-testcase-io-grid">
-                        <div className="notion-chunk-block">
-                          <div className="notion-chunk-block__bar">
-                            <span>Input Arguments</span>
-                          </div>
-                          <pre className="notion-code-pre">
-                            <code>{activeTestCase.input_display}</code>
-                          </pre>
-                        </div>
-
-                        <div className="notion-chunk-block">
-                          <div className="notion-chunk-block__bar">
-                            <span>Expected Output</span>
-                          </div>
-                          <pre className="notion-code-pre">
-                            <code>{activeTestCase.expected_display}</code>
-                          </pre>
-                        </div>
-                      </div>
-
-                      {activeTestResult ? (
-                        <div className="notion-chunk-block">
-                          <div className="notion-chunk-block__bar">
-                            <span>Your Output</span>
-                            <code>{activeTestResult.passed ? 'Exact Match' : 'Mismatch / Error'}</code>
-                          </div>
-                          <pre className="notion-code-pre">
-                            <code>
-                              {activeTestResult.error
-                                ? activeTestResult.error
-                                : activeTestResult.actual_display}
-                            </code>
-                          </pre>
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
                 </section>
-              </div>
+              )}
+
+              {/* Key Concepts Probed Card */}
+              <section className="notion-white-card">
+                <div className="notion-white-card__top">
+                  <span className="notion-eyebrow">What the Examiner Is Verifying</span>
+                  <span className="notion-pill-tag">
+                    Question {activeIdx + 1} of {questions.length}
+                  </span>
+                </div>
+                <div className="notion-pill-cluster">
+                  {currentQuestion.good_answer_mentions.map((mention, idx) => (
+                    <span key={idx} className="notion-pill-tag notion-pill-tag--xs">
+                      {mention}
+                    </span>
+                  ))}
+                </div>
+              </section>
             </div>
 
-            {/* ================================================================
-                PART 2: TARGETED CODEBASE & SOLUTION DEFENCE QUESTIONS
-                ================================================================ */}
-            <section
-              ref={questionsSectionRef}
-              id="targeted-defence-questions"
-              className="notion-section"
-            >
-              <SectionHeading
-                eyebrow="Part 2 · Targeted Codebase & Exercise Defence"
-                title="Defend your implementation and architectural trade-offs."
-                description="Answer each targeted question below using specific details from your coding exercise and your uploaded repository. Stage 07 verifies verbatim quotes from your answers across all 5 rubric dimensions."
-              />
-
-              <div className="notion-targeted-questions-stack">
-                {questions.map((q, idx) => {
-                  const badgeColor = dimensionBadgeStyle[q.dimension] ?? {
-                    bg: '#e6f3fe',
-                    text: '#0075de',
-                  }
-                  const currentAns = answers[q.id] ?? ''
-                  const words = countWords(currentAns)
-                  const isListeningThis = listeningQuestionId === q.id
-
-                  return (
-                    <article key={q.id} className="notion-white-card notion-targeted-q-card">
-                      <div className="notion-white-card__top">
-                        <div className="notion-pill-cluster">
-                          <span className="notion-stage-code">Question 0{idx + 1}</span>
-                          <span
-                            className="notion-pill-tag"
-                            style={{ backgroundColor: badgeColor.bg, color: badgeColor.text }}
-                          >
-                            {q.dimension_label}
-                          </span>
-                          <code className="notion-code-chip notion-code-chip--blue">{q.anchor}</code>
-                        </div>
-
-                        <div className="notion-pill-cluster">
-                          {speechCaps.tts ? (
-                            <button
-                              type="button"
-                              className="notion-btn notion-btn--outlined-xs"
-                              onClick={() => handleSpeakQuestion(q)}
-                            >
-                              {speakingQuestionId === q.id ? 'Speaking…' : '🔊 Read Question'}
-                            </button>
-                          ) : null}
-                          <span
-                            className={`notion-pill-tag ${
-                              words >= 15 ? 'notion-pill-tag--sky' : 'notion-pill-tag--peach'
-                            }`}
-                          >
-                            {words} words {words >= 15 ? '✓ Evidence ready' : '(aim for 15+ words)'}
-                          </span>
-                        </div>
-                      </div>
-
-                      <p className="notion-examiner-quote">{q.text}</p>
-
-                      <div className="notion-followup-callout">
-                        <span className="notion-eyebrow">Targeted Follow-Up Probe to Address:</span>
-                        <p className="notion-white-card__body" style={{ fontSize: '14px', marginTop: '4px' }}>
-                          {q.follow_up}
-                        </p>
-                      </div>
-
-                      {isListeningThis && interimTranscript ? (
-                        <div className="notion-interim-voice">
-                          <span className="notion-pill-tag notion-pill-tag--coral">Listening</span>
-                          <span>{interimTranscript}</span>
-                        </div>
-                      ) : null}
-
-                      <div className="notion-field-group">
-                        <div className="notion-field-group__label-row">
-                          <label className="notion-field-label" htmlFor={`answer-${q.id}`}>
-                            Your Technical Defence Response ({q.id})
-                          </label>
-                          <div className="notion-pill-cluster">
-                            {speechCaps.stt ? (
-                              <button
-                                type="button"
-                                className={`notion-btn ${
-                                  isListeningThis
-                                    ? 'notion-btn--coral-active'
-                                    : 'notion-btn--outlined-xs'
-                                }`}
-                                onClick={() => handleToggleDictation(q.id)}
-                              >
-                                {isListeningThis ? '⏹ Stop Mic' : '🎙 Dictate with Voice'}
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        <textarea
-                          id={`answer-${q.id}`}
-                          className="notion-defence-textarea"
-                          rows={4}
-                          placeholder={q.suggested_outline}
-                          value={currentAns}
-                          onChange={(e) =>
-                            setAnswers((prev) => ({
-                              ...prev,
-                              [q.id]: e.target.value,
-                            }))
-                          }
-                        />
-                      </div>
-
-                      <div className="notion-pill-cluster">
-                        <span className="notion-caption-muted">Key concepts probed:</span>
-                        {q.good_answer_mentions.map((mention, mIdx) => (
-                          <span key={mIdx} className="notion-pill-tag notion-pill-tag--xs">
-                            {mention}
-                          </span>
-                        ))}
-                      </div>
-                    </article>
-                  )
-                })}
-              </div>
-
-              {/* Bottom Submit Strip */}
-              <div className="notion-accent-card notion-accent-card--sky-tint">
-                <div className="notion-accent-card__header-row">
-                  <div>
-                    <span className="notion-pill-tag notion-pill-tag--white">
-                      Ready for Stage 07 Double-Pass Grading
+            {/* RIGHT PANE: Active Question / Tailored Follow-Up & Student Response */}
+            <div className="notion-hackerrank-Ide">
+              <article className="notion-white-card notion-targeted-q-card">
+                <div className="notion-white-card__top">
+                  <div className="notion-pill-cluster">
+                    <span className="notion-stage-code">
+                      Question 0{activeIdx + 1} of 0{questions.length}
                     </span>
-                    <h3 className="notion-accent-card__heading notion-accent-card__heading--sm" style={{ marginTop: '8px' }}>
-                      Finish Live Assessment &amp; Generate Verified Grading Report
-                    </h3>
-                    <p className="notion-accent-card__body" style={{ marginTop: '4px' }}>
-                      Your Python coding exercise will be verified against all {challenge.test_cases.length} test cases
-                      and your {questions.length} targeted defence answers will be scored across two independent passes
-                      with verbatim quote verification.
-                    </p>
+                    <span
+                      className="notion-pill-tag"
+                      style={{
+                        backgroundColor:
+                          dimensionBadgeStyle[currentQuestion.dimension]?.bg ?? '#e6f3fe',
+                        color: dimensionBadgeStyle[currentQuestion.dimension]?.text ?? '#0075de',
+                      }}
+                    >
+                      {currentQuestion.dimension_label}
+                    </span>
+                    <span
+                      className={`notion-pill-tag ${
+                        isLiveModification ? 'notion-pill-tag--marigold' : 'notion-pill-tag--sky'
+                      }`}
+                    >
+                      {isLiveModification ? 'Live Code Modification' : 'Code Defence Question'}
+                    </span>
                   </div>
 
-                  <div className="notion-upload-actions">
-                    <button
-                      type="button"
-                      className="notion-btn notion-btn--primary notion-btn--lg"
-                      disabled={isSubmittingDefence}
-                      onClick={handleSubmitAssessment}
-                    >
-                      {isSubmittingDefence
-                        ? 'Running Test Suite & Double-Pass Grader…'
-                        : 'Submit Assessment & View Results →'}
-                    </button>
+                  <div className="notion-pill-cluster">
+                    {speechCaps.tts ? (
+                      <button
+                        type="button"
+                        className="notion-btn notion-btn--outlined-xs"
+                        onClick={() =>
+                          handleSpeakText(
+                            turnPhase === 'primary'
+                              ? currentQuestion.text
+                              : followUpQuestions[currentQid] || currentQuestion.follow_up
+                          )
+                        }
+                      >
+                        {isSpeaking ? 'Speaking…' : '🔊 Read Aloud'}
+                      </button>
+                    ) : null}
                   </div>
                 </div>
-              </div>
-            </section>
-          </>
+
+                {/* Primary Question Prompt */}
+                <div className="notion-primary-question-box">
+                  <span className="notion-eyebrow">Examiner Prompt ({currentQuestion.id})</span>
+                  <p className="notion-examiner-quote" style={{ marginTop: '6px' }}>
+                    {currentQuestion.text}
+                  </p>
+                  {isLiveModification && currentQuestion.modification_prompt ? (
+                    <p className="notion-caption-muted" style={{ marginTop: '8px' }}>
+                      <strong>Task:</strong> {currentQuestion.modification_prompt}
+                    </p>
+                  ) : null}
+                </div>
+
+                {/* If in Primary Turn Phase */}
+                {turnPhase === 'primary' ? (
+                  <>
+                    {isListening && interimTranscript ? (
+                      <div className="notion-interim-voice">
+                        <span className="notion-pill-tag notion-pill-tag--coral">Listening</span>
+                        <span>{interimTranscript}</span>
+                      </div>
+                    ) : null}
+
+                    <div className="notion-field-group">
+                      <div className="notion-field-group__label-row">
+                        <label className="notion-field-label" htmlFor="active-primary-answer">
+                          {isLiveModification
+                            ? 'Explain Your Live Code Modification & Edge-Case Fix'
+                            : 'Your Technical Response'}
+                        </label>
+                        <div className="notion-pill-cluster">
+                          <span
+                            className={`notion-pill-tag ${
+                              activeAnswerWords >= 15
+                                ? 'notion-pill-tag--sky'
+                                : 'notion-pill-tag--peach'
+                            }`}
+                          >
+                            {activeAnswerWords} words
+                          </span>
+                          {speechCaps.stt ? (
+                            <button
+                              type="button"
+                              className={`notion-btn ${
+                                isListening
+                                  ? 'notion-btn--coral-active'
+                                  : 'notion-btn--outlined-xs'
+                              }`}
+                              onClick={handleToggleMicrophone}
+                            >
+                              {isListening ? '⏹ Stop Mic' : '🎙 Speak Answer'}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <textarea
+                        id="active-primary-answer"
+                        className="notion-defence-textarea"
+                        rows={5}
+                        placeholder={currentQuestion.suggested_outline}
+                        value={currentPrimaryText}
+                        onChange={(e) =>
+                          setPrimaryAnswers((prev) => ({
+                            ...prev,
+                            [currentQid]: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+
+                    <div className="notion-upload-actions" style={{ justifyContent: 'space-between' }}>
+                      <span className="notion-caption-muted">
+                        {currentQuestion.ask_follow_up
+                          ? 'Submitting this turn will trigger a tailored follow-up probe on your answer (30s timer).'
+                          : 'Submitting this turn will advance to the next codebase question.'}
+                      </span>
+
+                      <button
+                        type="button"
+                        className="notion-btn notion-btn--primary notion-btn--lg"
+                        disabled={isGeneratingFollowUp}
+                        onClick={handleConfirmPrimaryTurn}
+                      >
+                        {isGeneratingFollowUp
+                          ? 'Examiner Tailoring Follow-Up…'
+                          : currentQuestion.ask_follow_up
+                            ? 'Submit & Hear Tailored Follow-Up →'
+                            : activeIdx + 1 < questions.length
+                              ? 'Submit & Next Question →'
+                              : 'Submit & Grade Assessment →'}
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  /* Follow-Up Turn Phase (30-Second Timer Reset) */
+                  <>
+                    <div className="notion-student-quote">
+                      <strong>Your initial answer:</strong>{' '}
+                      {currentPrimaryText || '(Submitted live code modification)'}
+                    </div>
+
+                    <div className="notion-followup-callout">
+                      <div className="notion-white-card__top">
+                        <span className="notion-pill-tag notion-pill-tag--marigold">
+                          Tailored Examiner Follow-Up (30s Timer)
+                        </span>
+                        <span className="notion-caption-muted">
+                          {followUpNotes[currentQid] || 'Probing your response'}
+                        </span>
+                      </div>
+                      <p className="notion-examiner-quote" style={{ marginTop: '8px' }}>
+                        {followUpQuestions[currentQid] || currentQuestion.follow_up}
+                      </p>
+                    </div>
+
+                    {isListening && interimTranscript ? (
+                      <div className="notion-interim-voice">
+                        <span className="notion-pill-tag notion-pill-tag--coral">Listening</span>
+                        <span>{interimTranscript}</span>
+                      </div>
+                    ) : null}
+
+                    <div className="notion-field-group">
+                      <div className="notion-field-group__label-row">
+                        <label className="notion-field-label" htmlFor="active-followup-answer">
+                          Your Follow-Up Response ({currentQuestion.id})
+                        </label>
+                        <div className="notion-pill-cluster">
+                          <span className="notion-pill-tag">{activeAnswerWords} words</span>
+                          {speechCaps.stt ? (
+                            <button
+                              type="button"
+                              className={`notion-btn ${
+                                isListening
+                                  ? 'notion-btn--coral-active'
+                                  : 'notion-btn--outlined-xs'
+                              }`}
+                              onClick={handleToggleMicrophone}
+                            >
+                              {isListening ? '⏹ Stop Mic' : '🎙 Speak Follow-Up'}
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <textarea
+                        id="active-followup-answer"
+                        className="notion-defence-textarea"
+                        rows={4}
+                        placeholder="Address the examiner's follow-up with a concrete detail from your code…"
+                        value={currentFollowUpText}
+                        onChange={(e) =>
+                          setFollowUpAnswers((prev) => ({
+                            ...prev,
+                            [currentQid]: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+
+                    <div className="notion-upload-actions" style={{ justifyContent: 'space-between' }}>
+                      <button
+                        type="button"
+                        className="notion-btn notion-btn--ghost-cta"
+                        onClick={() => setTurnPhase('primary')}
+                      >
+                        ← Edit Initial Response
+                      </button>
+
+                      <button
+                        type="button"
+                        className="notion-btn notion-btn--primary notion-btn--lg"
+                        disabled={isSubmittingFinal}
+                        onClick={handleConfirmFollowUpTurn}
+                      >
+                        {activeIdx + 1 < questions.length
+                          ? `Submit Follow-Up & Go to Question 0${activeIdx + 2} →`
+                          : isSubmittingFinal
+                            ? 'Running Stage 07 Double-Pass Grader…'
+                            : 'Submit Final Answer & View Results →'}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </article>
+            </div>
+          </div>
         )}
       </div>
     </AppShell>

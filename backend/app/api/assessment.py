@@ -23,7 +23,9 @@ from app.services.coding_challenge import (
     build_coding_challenge,
     build_targeted_questions,
     execute_coding_challenge,
+    generate_tailored_followup,
 )
+from app.services.grading_engine import run_final_grading_engine
 from app.services.storage import storage_service
 
 # Ensure root pipeline modules are importable both in Docker (/app/pipeline_root) and locally
@@ -705,11 +707,19 @@ class RunCodingChallengeRequest(BaseModel):
 class TargetedQuestionAnswer(BaseModel):
     question_id: str
     answer: str
+    follow_up_question: Optional[str] = ""
     follow_up_answer: Optional[str] = ""
+    modified_code: Optional[str] = ""
+
+
+class GenerateFollowUpRequest(BaseModel):
+    question_id: str
+    answer: str
+    modified_code: Optional[str] = ""
 
 
 class SubmitCodingDefenceRequest(BaseModel):
-    code: str
+    code: Optional[str] = ""
     answers: List[TargetedQuestionAnswer]
     use_llm: bool = True
     round_no: int = 1
@@ -828,6 +838,25 @@ def run_repository_coding_challenge(
     }
 
 
+@router.post("/repositories/{repository_id}/coding-challenge/follow-up")
+def generate_repository_question_followup(
+    repository_id: int,
+    payload: GenerateFollowUpRequest,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    files_map, repo_name = _load_repo_files_and_name(repository_id, db)
+    challenge = build_coding_challenge(files_map, repo_name, repository_id, cache_dir=RUNS_ROOT)
+    question = next(
+        (q for q in challenge.get("targeted_questions", []) if q["id"] == payload.question_id),
+        challenge["targeted_questions"][0] if challenge.get("targeted_questions") else {},
+    )
+    return generate_tailored_followup(
+        question=question,
+        student_answer=payload.answer,
+        modified_code=payload.modified_code,
+    )
+
+
 @router.post("/repositories/{repository_id}/coding-challenge/submit-defence")
 def submit_coding_challenge_and_defence(
     repository_id: int,
@@ -842,16 +871,9 @@ def submit_coding_challenge_and_defence(
 
     files_map, repo_name = _load_repo_files_and_name(repository_id, db)
     challenge = build_coding_challenge(files_map, repo_name, repository_id, cache_dir=RUNS_ROOT)
-    exec_result = execute_coding_challenge(challenge, payload.code)
     targets = _extract_codebase_targets(files_map, repo_name)
-    targeted_questions = build_targeted_questions(
-        challenge,
-        targets,
-        student_code=payload.code,
-        test_summary=exec_result,
-    )
+    targeted_questions = build_targeted_questions(challenge, targets)
 
-    # Build stage5_plan.json from the targeted questions so Stage 7 grader grades all 5 dimensions
     plan_questions = []
     for q in targeted_questions:
         plan_questions.append(
@@ -862,14 +884,14 @@ def submit_coding_challenge_and_defence(
                 "follow_up": q["follow_up"],
                 "good_answer_mentions": q["good_answer_mentions"],
                 "why_selected": q["why_selected"],
-                "source": {"rule_id": f"coding-challenge-{q['id'].lower()}", "origin": "coding_challenge"},
-                "citations": [{"file": challenge["target_file"], "line": targets["primary"]["start_line"]}],
+                "source": {"rule_id": f"tailored-{q['id'].lower()}", "origin": q.get("kind", "code_question")},
+                "citations": [{"file": q.get("target_file", challenge["target_file"]), "line": targets["primary"]["start_line"]}],
             }
         )
 
     plan_data = {
         "round": round_no,
-        "mode": "hackerrank-coding-defence",
+        "mode": "tailored-codebase-assessment",
         "max_questions": len(plan_questions),
         "questions": plan_questions,
         "not_triggered": [],
@@ -885,20 +907,17 @@ def submit_coding_challenge_and_defence(
         data=plan_data,
         count_in=len(plan_questions),
         count_out=len(plan_questions),
-        summary=f"{len(plan_questions)} targeted questions on {challenge['function_name']} & {challenge['target_file']}",
+        summary=f"{len(plan_questions)} tailored questions & live modifications on {repo_name}",
         model=None,
     )
 
-    # Map submitted student answers by question_id
     ans_by_id: Dict[str, TargetedQuestionAnswer] = {a.question_id: a for a in payload.answers}
+    live_modifications: List[Dict[str, Any]] = []
 
     turns: List[Dict[str, Any]] = [
         {
             "speaker": "examiner",
-            "text": (
-                f"Coding Exercise Completed: {challenge['title']} on {challenge['target_lines']} "
-                f"({exec_result['passed_count']}/{exec_result['total_count']} test cases passed)."
-            ),
+            "text": f"Live Codebase Assessment started on {repo_name} (5 tailored questions, 30s timer per turn).",
             "kind": "intro",
             "question_id": None,
         }
@@ -908,7 +927,29 @@ def submit_coding_challenge_and_defence(
         qid = q["id"]
         ans_item = ans_by_id.get(qid)
         main_text = (ans_item.answer.strip() if ans_item and ans_item.answer else "")
+        follow_q_text = (
+            ans_item.follow_up_question.strip()
+            if ans_item and ans_item.follow_up_question
+            else q.get("follow_up", "")
+        )
         follow_text = (ans_item.follow_up_answer.strip() if ans_item and ans_item.follow_up_answer else "")
+        mod_code = (ans_item.modified_code.strip() if ans_item and ans_item.modified_code else "")
+
+        if q.get("kind") == "live_modification":
+            starter = (q.get("starter_snippet") or q.get("raw_snippet") or "").strip()
+            changed = bool(mod_code and mod_code != starter)
+            live_modifications.append(
+                {
+                    "question_id": qid,
+                    "target_file": q.get("target_file", challenge["target_file"]),
+                    "target_lines": q.get("target_lines", challenge["target_lines"]),
+                    "prompt": q.get("modification_prompt") or q["text"],
+                    "starter_code": starter,
+                    "modified_code": mod_code or starter,
+                    "was_modified": changed,
+                    "explanation": main_text,
+                }
+            )
 
         turns.append(
             {
@@ -932,7 +973,7 @@ def submit_coding_challenge_and_defence(
             turns.append(
                 {
                     "speaker": "examiner",
-                    "text": q["follow_up"],
+                    "text": follow_q_text,
                     "kind": "follow_up",
                     "question_id": qid,
                 }
@@ -955,7 +996,7 @@ def submit_coding_challenge_and_defence(
             "examiner_turns": sum(1 for t in turns if t["speaker"] == "examiner"),
             "multi_question_rejections": 0,
             "follow_up_fallbacks": 0,
-            "model_follow_ups": 0,
+            "model_follow_ups": sum(1 for t in turns if t.get("kind") == "follow_up"),
             "repeats": 0,
             "passes": 0,
             "feedback_requests": 0,
@@ -971,28 +1012,16 @@ def submit_coding_challenge_and_defence(
         data=transcript_data,
         count_in=len(plan_questions),
         count_out=len([t for t in turns if t["speaker"] == "student"]),
-        summary=f"{len(turns)} turns recorded across coding exercise + targeted defence",
+        summary=f"{len(turns)} turns recorded across 5 tailored codebase questions",
         model=None,
     )
 
-    model, reason = llm.get_model(payload.use_llm)
-    results = grade.grade(transcript_data, plan_data, model, model_note=reason if model is None else "")
-    p1, p2, report_obj = results
-
-    # Attach coding challenge summary to report_obj before writing
-    report_obj["coding_challenge"] = {
-        "challenge_id": challenge["challenge_id"],
-        "title": challenge["title"],
-        "function_name": challenge["function_name"],
-        "target_file": challenge["target_file"],
-        "target_lines": challenge["target_lines"],
-        "submitted_code": payload.code,
-        "passed_count": exec_result["passed_count"],
-        "total_count": exec_result["total_count"],
-        "all_passed": exec_result["all_passed"],
-        "runtime_ms": exec_result["runtime_ms"],
-        "test_results": exec_result["test_results"],
-    }
+    p1, p2, report_obj = run_final_grading_engine(
+        transcript_data,
+        plan_data,
+        live_modifications=live_modifications,
+        use_llm=payload.use_llm,
+    )
 
     grade.write_outputs(
         r_dir,

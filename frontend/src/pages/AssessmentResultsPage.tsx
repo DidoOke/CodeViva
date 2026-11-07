@@ -189,6 +189,61 @@ export function AssessmentResultsPage({
           </section>
         ) : null}
 
+        {/* Live Code Modifications Summary */}
+        {report.live_modifications && report.live_modifications.length > 0 ? (
+          <section className="notion-section">
+            <SectionHeading
+              eyebrow="Live Code Modifications"
+              title="Code changes submitted during your live assessment"
+              description="Comparison of the original repository functions and your live modifications made under the 30-second clock."
+            />
+
+            <div className="notion-stage-stack">
+              {report.live_modifications.map((mod) => (
+                <article key={mod.question_id} className="notion-white-card">
+                  <div className="notion-white-card__top">
+                    <div className="notion-pill-cluster">
+                      <span className="notion-stage-code">{mod.question_id}</span>
+                      <code className="notion-code-chip notion-code-chip--blue">
+                        {mod.target_lines}
+                      </code>
+                    </div>
+                    <span
+                      className={`notion-pill-tag ${
+                        mod.was_modified ? 'notion-pill-tag--sky' : 'notion-pill-tag--peach'
+                      }`}
+                    >
+                      {mod.was_modified ? '✓ Code Modified Live' : 'Unmodified'}
+                    </span>
+                  </div>
+
+                  <p className="notion-white-card__body">{mod.prompt}</p>
+
+                  <div className="notion-testcase-io-grid">
+                    <div className="notion-chunk-block">
+                      <div className="notion-chunk-block__bar">
+                        <span>Original Repository Snippet</span>
+                      </div>
+                      <pre className="notion-code-pre" style={{ maxHeight: '240px' }}>
+                        <code>{mod.starter_code}</code>
+                      </pre>
+                    </div>
+
+                    <div className="notion-chunk-block">
+                      <div className="notion-chunk-block__bar">
+                        <span>Your Submitted Code Modification</span>
+                      </div>
+                      <pre className="notion-code-pre" style={{ maxHeight: '240px' }}>
+                        <code>{mod.modified_code}</code>
+                      </pre>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {/* 5 Rubric Dimensions Breakdown */}
         <section className="notion-section">
           <SectionHeading
