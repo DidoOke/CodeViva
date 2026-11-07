@@ -7,10 +7,16 @@ services:
       POSTGRES_PASSWORD: codeviva
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codeviva -d codeviva"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
 
   backend:
     build:
       context: ./backend
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     environment:
       APP_ENV: development
       DATABASE_URL: postgresql+psycopg://codeviva:codeviva@db:5432/codeviva
@@ -22,7 +28,8 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
   frontend:
     build:
