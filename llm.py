@@ -182,7 +182,7 @@ def load_env_file(path: Optional[Path] = None) -> None:
         key, value = line.split("=", 1)
         key = key.strip().removeprefix("export ").strip()
         value = value.strip().strip('"').strip("'")
-        if key and value and key not in os.environ:
+        if key and value and not os.environ.get(key):
             os.environ[key] = value
 
 

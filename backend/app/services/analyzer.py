@@ -94,7 +94,7 @@ class RepositoryAnalyzer:
                 "git",
                 "clone",
                 "--depth",
-                "1",
+                "15",
                 repository.github_url or "",
                 str(repo_path),
             ],

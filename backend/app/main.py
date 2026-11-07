@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.assessment import router as assessment_router
 from app.api.repositories import router as repositories_router
 from app.api.speech import router as speech_router
 from app.core.config import settings
@@ -32,3 +33,4 @@ def healthcheck() -> dict[str, str]:
 
 app.include_router(repositories_router, prefix=settings.api_prefix)
 app.include_router(speech_router, prefix=settings.api_prefix)
+app.include_router(assessment_router, prefix=settings.api_prefix)
