@@ -1,0 +1,21 @@
+# Synthetic round-2 answers for submission 1 (code: submission 11). One paragraph per answer.
+# Includes an honest self-correction on the "race" fix, which round 2 is designed to reward.
+In round 1 the backoff sleep blocked the only loop, so every retry delayed the whole run, and that is why I went down to three. With a pool of four workers a sleeping retry only holds up its own worker, so I could afford one more attempt. What I give up is that a job that is really broken now holds a worker for longer, up to about 7.5 seconds of backoff.
+
+Each job would wait out its own backoff on its worker, so the pool would fill up with sleeping retries and the other jobs would queue behind them. After four attempts they would fail, and their dependents would be skipped well before the minute was up.
+
+The worker threads only run attempt_job, which reads the job and the rng. The results dict, the waiting counts and the ready heap are only changed in the main loop after wait returns. The one thing that is really shared is the rng, because random.Random is called from several threads at once.
+
+With the current design nothing should go missing from results, because only the main thread writes to it. The rng sharing would make runs non-reproducible even with a fixed seed, which would break my tests that rely on a seed.
+
+Honestly, I think that bug could not happen. I added the lock because I assumed the done callbacks ran on worker threads, but all of the bookkeeping runs on the main thread after wait returns, so two workers can never release a dependent at the same time. The lock does no harm, but the commit message describes a race that was not real.
+
+I did not confirm it properly. I ran the job file a few times and the dependents came out right, but that would also have happened without the fix. A better check would be a test where two jobs finish at the same moment and their shared dependent is counted exactly once.
+
+It held up well. Kahn's algorithm found the jobs that never become ready, and the test with a two-job cycle passed first time. What I had not planned was what to report: I said skipped or an error, and I ended up adding a separate blocked status so that a cycle is not confused with a failed dependency.
+
+I would have planned the concurrency first, because the cycle check runs before scheduling and was easy, but the thread pool forced me to rewrite schedule, and I ended up moving the cycle code around twice.
+
+I would give each worker its own random generator seeded from the job id, because the shared rng makes parallel runs non-deterministic and my seeded tests could become flaky.
+
+I would run the same job file with a fixed seed ten times with four workers and check that the results are identical every time.
