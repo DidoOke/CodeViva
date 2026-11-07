@@ -23,6 +23,7 @@ from artifacts import round_dir
 from examiner import EVALUATIVE_RE, ScriptedTransport, count_questions
 from interview import read_answers
 from pipeline import RunContext, run_pipeline
+from llm import ModelError, get_model, strict_object
 from stages import DEFAULT_KB, build_stages, make_context_options
 
 VAGUE = ["I just thought it seemed fine and it works well enough for what we needed.",
@@ -90,6 +91,32 @@ def check_examiner(r: Dict[str, Any]) -> List[str]:
     return fails
 
 
+JUDGE_SYSTEM = """You audit an oral examiner's follow-up question. Rate 1-5 each:
+specificity (5 = built on a concrete detail of the student's answer or the code, 1 = generic and could be asked of anyone),
+neutrality (5 = gives no hint about correctness or what a good answer contains, 1 = evaluates or leaks)."""
+JUDGE_SCHEMA = strict_object({"specificity": {"type": "integer", "minimum": 1, "maximum": 5},
+                              "neutrality": {"type": "integer", "minimum": 1, "maximum": 5},
+                              "reason": {"type": "string"}})
+
+
+def judge_follow_ups(model, r: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """LLM-as-judge over every follow-up turn of one run."""
+    rows, last = [], ""
+    qs = {q["id"]: q for q in r["plan"]["questions"]}
+    for t in r["turns"]:
+        if t["speaker"] == "student":
+            last = t["text"]
+        elif t["kind"] == "follow_up":
+            q = qs[t["question_id"]]
+            try:
+                j = model.complete_json(system=JUDGE_SYSTEM, name="judge", schema=JUDGE_SCHEMA,
+                                        user=f"Main question: {q['text']}\nStudent answer: {last}\nFollow-up: {t['text']}")
+            except ModelError as exc:
+                rows.append({"follow_up": t["text"], "error": str(exc)}); continue
+            rows.append({"follow_up": t["text"], **j})
+    return rows
+
+
 def check_grader(results: Dict[str, Dict[str, Any]]) -> List[str]:
     fails = []
     for p, r in results.items():
@@ -117,6 +144,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--json", type=Path)
     a = ap.parse_args(argv)
     kb = a.kb or DEFAULT_KB
+    judge = None
+    if a.use_llm:
+        judge, why = get_model(True)
+        if judge is None:
+            print(f"note: judge disabled: {why}", file=sys.stderr)
     out, bad = [], 0
     for sub in a.submission:
         scratch = Path(tempfile.mkdtemp(prefix="cveval"))
@@ -134,10 +166,21 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"{p:8} skipped ({r.get('skipped')})"); continue
             print(f"{p:8} {r['total']:>6} {len(r['turns']):>5} {r['specific_follow_ups']:>10}/{r['follow_ups']:<9} "
                   f"{str(r['report']['needs_human_review']):>12}")
+        if judge:
+            for p, r in res.items():
+                if "plan" not in r:
+                    continue
+                rows = [x for x in judge_follow_ups(judge, r) if "error" not in x]
+                r["judge"] = rows
+                if rows:
+                    sp = sum(x["specificity"] for x in rows) / len(rows)
+                    ne = sum(x["neutrality"] for x in rows) / len(rows)
+                    print(f"judge {p:7} specificity {sp:.1f}/5  neutrality {ne:.1f}/5  (n={len(rows)})")
+                    fails += [f"{p}: judge neutrality {x['neutrality']}: {x['follow_up'][:50]}" for x in rows if x["neutrality"] <= 2]
         print("FAIL: " + "; ".join(fails) if fails else "all checks passed")
         bad += len(fails)
         out.append({"submission": sub, "fails": fails, "personas": {p: {k: v for k, v in r.items() if k in
-                    ("total", "stats", "follow_ups", "specific_follow_ups")} for p, r in res.items()}})
+                    ("total", "stats", "follow_ups", "specific_follow_ups", "judge")} for p, r in res.items()}})
         shutil.rmtree(scratch, ignore_errors=True)
     if a.json:
         a.json.write_text(json.dumps(out, indent=2))
