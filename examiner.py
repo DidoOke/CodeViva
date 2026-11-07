@@ -34,7 +34,7 @@ PASS_ACK = "That's fine, we'll move on."
 ACKS = ["Thank you.", "Okay, thanks.", "Thanks for explaining.", "Thank you, noted."]
 GENERIC_FOLLOW_UP = "Could you say a little more about how that works in your code?"
 MAX_REPEATS = 3
-MAX_FOLLOW_UP_WORDS = 40
+MAX_FOLLOW_UP_WORDS = 45
 
 REPEAT_RE = re.compile(r"^\s*(repeat|again|say (that|it) again|can you repeat|could you repeat|pardon|sorry\??|what\??)"
                        r"[\s.!?]*(that|the question|please)?[\s.!?]*$", re.I)
@@ -150,10 +150,14 @@ def transcript_from_voice(payload: Dict[str, Any]) -> Dict[str, Any]:  # pragma:
 
 FOLLOW_UP_SCHEMA = strict_object({"text": {"type": "string"}})
 FOLLOW_UP_SYSTEM = """You are a calm, neutral oral examiner for a programming course.
-Write ONE short follow-up question (at most 30 words, exactly one question mark) that probes
-the student's last answer more deeply, about their own code. Do not evaluate the answer, do
-not say whether it is right, do not hint at what a good answer contains, and do not ask two
-things at once. Plain, simple English."""
+Write ONE follow-up question (at most 35 words, exactly one question mark) that probes the
+student's last answer about their own code.
+- Pick up a specific word, claim or detail the student actually said and ask them to go deeper
+  on it (a concrete case, a number, what would break, why that choice over another).
+- If the answer was vague or very short, ask for one concrete example from their code.
+- Use the cited code location, if given, to keep the question specific.
+- Do not evaluate the answer, do not say whether it is right, and do not ask two things at once.
+Plain, simple English."""
 
 
 class Examiner:
@@ -200,7 +204,7 @@ class Examiner:
         if count_questions(text) != 1:
             return f"it contained {count_questions(text)} question marks; write exactly one question"
         if word_count(text) > MAX_FOLLOW_UP_WORDS:
-            return "it was too long; keep it under 30 words"
+            return "it was too long; keep it under 35 words"
         if EVALUATIVE_RE.search(text):
             return "it evaluated the answer; stay neutral"
         return None
@@ -209,7 +213,9 @@ class Examiner:
         fallback = question.get("follow_up") or GENERIC_FOLLOW_UP
         if self.phraser is None:
             return fallback
+        cites = "; ".join(f"{c.get('file')}:{c.get('line')}" for c in question.get("citations", []) if c.get("file"))
         user = (f"Main question: {question['text']}\nStudent's answer: {answer}\n"
+                f"Code location: {cites or '(none)'}\n"
                 f"Lecturer's suggested follow-up (adapt it to the answer): {question.get('follow_up') or '(none)'}")
         for _ in range(2):  # original + one re-ask
             try:
