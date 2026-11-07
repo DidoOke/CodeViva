@@ -1,6 +1,6 @@
 <div align="center">
 
-# CodeViva
+<img width="700" height="164" alt="image" src="https://github.com/user-attachments/assets/88190fca-8461-44e4-a53a-1c84ea08683a" />
 
 ### Don't detect the AI. Verify the understanding.
 
