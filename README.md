@@ -6,7 +6,7 @@
 
 **An adaptive, AI-powered technical defence for university coding projects.**
 
-[Problem](#the-problem) · [Solution](#our-solution) · [How it works](#how-it-works) · [Prototype](#prototype-scope) · [Roadmap](#roadmap)
+[Problem](#the-problem) · [Solution](#our-solution) · [How it works](#how-it-works) · [Prototype](#prototype-scope) 
 
 </div>
 
@@ -223,23 +223,6 @@ npm install
 npm run dev
 ```
 
-## Roadmap
-
-- [x] Repository ingestion and static analysis foundation
-- [x] Upload-first frontend experience
-- [x] Retrieval-ready code chunk storage
-- [ ] Project and concept map
-- [ ] Embeddings and semantic retrieval
-- [ ] Lecturer-defined learning outcomes
-- [ ] Grounded question generation
-- [ ] Adaptive viva engine
-- [ ] Voice/video assessment recording and playback
-- [ ] Embedded code viewer
-- [ ] Sandboxed live coding task
-- [ ] Concept-transfer task
-- [ ] Evidence-based educator report
-- [ ] Cohort-level misconception insights
-- [ ] GitHub Classroom and LMS integrations
 
 ## Success criteria
 
